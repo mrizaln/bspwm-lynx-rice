@@ -1,0 +1,1 @@
+../../.config/rofi/network-manager/nmcli_action.sh

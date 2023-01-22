@@ -103,7 +103,7 @@ connect()
         result=$(connect_hidden "$ssid" "$password" 2>&1)
     else
         notify-send "connecting..."
-        result=$(nmcli device wifi connect "$ssid" hidden on2>&1)
+        result=$(nmcli device wifi connect "$ssid" hidden on 2>&1)
     fi
 
     notify-send "$result"
