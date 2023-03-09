@@ -1,7 +1,8 @@
 #!/bin/env bash
 
 theme="processtable.rasi"
-dir="$HOME/.config/rofi/resource-monitor"
+# dir="$HOME/.config/rofi/resource-monitor"
+dir=$(dirname "$0")
 rofi_command="rofi -theme $dir/$theme"
 
 header=("%cpu" "%mem |  mem | swap" "processName")

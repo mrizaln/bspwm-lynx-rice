@@ -258,9 +258,8 @@ class ProcessArray:
             pid = int(line[0])
             pcpu = float(line[1])
             pmem = float(line[2])
-            comm = line[3].split("/")[
-                0
-            ]  # some process have sub-processes that named something like: "parentProcess/subProcess", I take only the parentProcess name
+            comm = line[3].split("/")[0]  # some process have sub-processes that
+            # named something like: "parentProcess/subProcess", I take only the parentProcess name
 
             if comm in processNames:
                 sameProcessIndex = processNames[comm]
@@ -291,76 +290,7 @@ class ProcessArray:
         else:
             attrib = sortBy
 
-        # bubble sort
-        for i in range(size):
-            swapped = False
-
-            for j in range(size - i - 1):
-                left = processArray[j].getAttribute(attrib)  # get attrib value
-                right = processArray[j + 1].getAttribute(attrib)  # get attrib value
-
-                if attrib == "comm":
-                    right, left = (
-                        left.lower(),
-                        right.lower(),
-                    )  # swap left-right and compare the lowercase version
-
-                if right > left:  # compare
-                    processArray[j], processArray[j + 1] = (
-                        processArray[j + 1],
-                        processArray[j],
-                    )
-                    swapped = True
-
-            if not swapped:
-                break
-
-        if reverse:
-            self.__processArray = processArray[::-1]
-
-        # insertion sort
-
-    #        for startIndex in range(size):
-    #            extract = processArray[startIndex]
-    #
-    #            for sortedIndex in range(startIndex-1, -1, -1):
-    #                current = processArray[sortedIndex]
-    #
-    #                if current.getAttribute(attrib) < extract.getAttribute(attrib):
-    #                    break
-    #
-    #                processArray[sortedIndex+1] = processArray[sortedIndex]
-    #                extract = current
-    #
-    #            processArray[startIndex] = extract
-
-    """
-        // insertion sort
-    template <std::size_t arr_n>
-    void insertionSort(std::array<int, arr_n>& array)
-    {
-        for (std::size_t startIndex{ 0 }; startIndex < array.size(); ++startIndex)
-        {
-            int* numPtr{ &array[startIndex] };
-
-            // extract
-            int num{ *numPtr };
-
-            for (int sortedIndex{ (int)(startIndex-1) }; sortedIndex >= 0; --sortedIndex)
-            {
-                int* current{ &array[sortedIndex] };
-
-                if (*current < num)
-                    break;
-
-                *(current + 1) = *current;
-                numPtr = current;
-            }
-
-            *numPtr = num;
-        }
-    }
-    """
+        self.__processArray = sorted(processArray, key=lambda process: process.getAttribute(attrib), reverse=not reverse)
 
     def __mergeProcesses(self, proc1: Process, proc2: Process):
         # TODO: implement the merging
