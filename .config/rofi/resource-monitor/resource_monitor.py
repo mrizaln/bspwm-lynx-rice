@@ -1,7 +1,6 @@
 #!/bin/env python3
 
 import subprocess
-import sys
 import glob
 import os
 import argparse
