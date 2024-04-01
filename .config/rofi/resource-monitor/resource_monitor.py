@@ -1,212 +1,96 @@
 #!/bin/env python3
 
 import subprocess
-import glob
 import os
 import argparse
+from dataclasses import dataclass
+
+# use SI unit (1000) or IEC unit (1024)
+KILO = 1000  # SI
+# KILO = 1024  # IEC
+CURRENT_SCRIPT_PID = os.getpid()
 
 
-class Process:
-    def __init__(
-        self,
-        pid: list[int],
-        comm: str,
-        mem: int = 0,
-        pmem: float = 0,
-        pcpu: float = 0,
-        swap: int = 0,
-    ) -> None:
-        self.__pid = pid  # list of pid with same comm
-        self.__comm = comm
-        self.__pcpu = pcpu
+def formatBytes(kBytes: int) -> str:
+    orderNames = {0: "k", 3: "M", 6: "G", 9: "T"}
 
-        self.TOTAL_MEMORY = self.__getTotalMemory()
+    kBytesNew = float(kBytes)
+    order = 0
+    while kBytesNew >= KILO:
+        kBytesNew /= KILO
+        order += 3
 
-        # mem and pmem
-        if mem:
-            self.__mem = mem  # in kB
-            self.__pmem = (
-                100 * mem / self.TOTAL_MEMORY if self.TOTAL_MEMORY else 0
-            )  # prevent divide by zero
-        elif pmem:
-            self.__pmem = pmem
-            self.__mem = self.__pmem * self.TOTAL_MEMORY / 100  # in kB
-        else:
-            self.__mem = 0
-            self.__pmem = 0
+    if order < 6:
+        kBytesNew = int(kBytesNew)
+    else:
+        kBytesNew = round(kBytesNew, 1)
 
-        # swap
-        if swap:
-            self.__swap = swap
-        else:
-            self.__swap = self.__getSwapUsage(pid)
+    return str(kBytesNew) + orderNames[order]
 
-    @classmethod
-    def initFromProc(cls, procDir: str):
-        if not procDir:
-            return cls([-1], "", 0, 0)
+
+def getTotalMemory() -> int:
+    try:
+        with open("/proc/meminfo", "r") as meminfo:
+            totalMemory = int(meminfo.readline().split()[1])
+    except:
+        try:
+            inputStr: str = input(
+                "error reading /proc/meminfo file. please input your system total memory in GB: "
+            )
+            totalMemory = int(KILO * KILO * float(inputStr))
+            raise  # temp
+        except:
+            totalMemory = 0
+
+    return totalMemory
+
+
+def calculateCpuUsage(utime, stime, starttime) -> float:
+    uptime: float = float(open("/proc/uptime").read().split()[0])  # in seconds
+    clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+    utime = utime / clk_tck  # in seconds
+    stime = stime / clk_tck  # in seconds
+    starttime = starttime / clk_tck  # in seconds
+
+    pcpu = 100 * (utime + stime) / (uptime - starttime)  # in percent
+
+    return pcpu
+
+
+# read /proc/{$pid}/status file directly
+# TODO: read from /proc/[pid]/statm instead
+# FIXME: not working on Fedora 37, different field get queried
+def getSwapFromPid(pid: list) -> int:
+    totalSwap = 0
+
+    for p in pid:
+        file = f"/proc/{p}/status"
 
         try:
-            with open(
-                f"{procDir}/stat", "r"
-            ) as procStatFile:  # read /proc/[pid]/stat file
-                procStatString = procStatFile.read()
-                # annoyingly, comm can contain space, and we need to take that into account
-                # on the /proc/[pid]/stat file, the comm is inside a parantheses: [pid] ([comm]) [state]...
-                procStat = procStatString.split(") ")[0].split(maxsplit=1)
-                procStat = [procStat[0], procStat[1][1:]] + procStatString.split(") ")[
-                    1
-                ].split()
-
-                # (1) pid
-                # (2) comm
-                # (3) state
-                # (14) utime
-                # (15) stime
-                # (22) starttime
-                # (24) rss              # memory usage (?) i guess it's enough using this
-
-                # print(procStat)
-
-                pid: int = int(procStat[0])
-                comm: str = procStat[1].split("/")[0]  # "(comm)"   -->    "comm"
-                # some process have sub-processes that named something like: "parentProcess/subProcess", I take only the parentProcess name
-                # TODO: use a more sophisticated method of calculating memory usage
-                mem: int = int(procStat[23])
-                swap: int = cls.__getSwapUsage([pid])
-
-                # calculate cpu usage
-                utime = int(procStat[13])
-                stime = int(procStat[14])
-                starttime = int(procStat[21])
-
-                pcpu = cls.__calculateCpuUsage(stime, utime, starttime)
+            with open(file, "r") as procStatus:
+                line: str = procStatus.readlines()[30].strip()
+                swap = int(line.split()[1]) if line.startswith("VmSwap") else 0
+                totalSwap += swap
 
         except FileNotFoundError:
-            return None
+            pass
 
-        return cls([pid], comm, mem, 0, pcpu, swap)
+    return totalSwap
 
-    @staticmethod
-    def __calculateCpuUsage(utime, stime, starttime) -> float:
-        uptime: float = float(open("/proc/uptime").read().split()[0])  # in seconds
-        clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
-        utime = utime / clk_tck  # in seconds
-        stime = stime / clk_tck  # in seconds
-        starttime = starttime / clk_tck  # in seconds
 
-        pcpu = 100 * (utime + stime) / (uptime - starttime)  # in percent
-
-        return pcpu
-
-    # read /proc/{$pid}/status file directly
-    # TODO: read from /proc/[pid]/statm instead
-    @staticmethod
-    def __getSwapUsage(pid: list) -> int:
-        totalSwap = 0
-
-        for p in pid:
-            file = f"/proc/{p}/status"
-
-            try:
-                with open(file, "r") as procStatus:
-                    line: str = procStatus.readlines()[30].strip()
-                    swap = int(line.split()[1]) if line.startswith("VmSwap") else 0
-                    totalSwap += swap
-
-            except FileNotFoundError:
-                pass
-
-        return totalSwap
-
-    @staticmethod
-    def __getTotalMemory() -> int:
-        try:
-            with open("/proc/meminfo", "r") as meminfo:
-                totalMemory = int(meminfo.readline().split()[1])
-        except:
-            try:
-                # totalMemory = int(1024 * 1024 * float(input("error reading /proc/meminfo file. please input your system total memory in GB: ")))
-                raise  # temp
-            except:
-                totalMemory = 0
-
-        return totalMemory
-
-    def __str__(self) -> str:
-        memInBytesWithOrder = self.formatBytes(self.__mem)
-        swapInBytesWithOrder = self.formatBytes(self.__swap)
-
-        return f"| {round(self.__pcpu,1):>5} | {round(self.__pmem,1):>4} | {memInBytesWithOrder:>4} | {swapInBytesWithOrder:>4} | {self.__comm:<20} {str(self.__pid):<18}"
-
-    @staticmethod
-    def formatBytes(kBytes: int) -> str:
-        orderNames = {0: "k", 3: "M", 6: "G", 9: "T"}
-
-        order = 0
-        while kBytes > 999:
-            kBytes /= 1024
-            order += 3
-
-        if order < 6:
-            kBytes = int(kBytes)
-        else:
-            kBytes = round(kBytes, 1)
-
-        return str(kBytes) + orderNames[order]
-
-    def setPID(self, pid: list[int]):
-        if pid:
-            self.__pid = pid
-
-    def setPCPU(self, pcpu: float):
-        if pcpu:
-            self.__pcpu = pcpu
-
-    def setPMEM(self, pmem: float):
-        if pmem:
-            self.__pmem = pmem
-
-    def addPID(self, pid: list[int]):
-        if pid:
-            self.__pid.extend(pid)
-            self.__swap += self.__getSwapUsage(pid)
-
-    def addPCPU(self, pcpu: float):
-        if pcpu:
-            self.__pcpu += pcpu
-
-    def addPMEM(self, pmem: float):
-        if pmem:
-            self.__pmem += pmem
-            self.__mem += pmem * self.TOTAL_MEMORY / 100
-
-    def getAttribute(self, type: str = None):
-        if type == "pid":
-            return self.__pid
-        elif type == "pcpu":
-            return self.__pcpu
-        elif type == "pmem":
-            return self.__pmem
-        elif type == "mem":
-            return self.__mem
-        elif type == "comm":
-            return self.__comm
-        elif type == "swap":
-            return self.__swap
-        else:
-            return None
+@dataclass
+class Process:
+    pid: list[int]
+    comm: str
+    pcpu: float
+    mem: int
+    swap: int
 
 
 class ProcessArray:
-    def __init__(self, fromProcFile: bool = False) -> None:
+    def __init__(self) -> None:
         self.__processArray: list[Process] = list()
         self.__iter_index = 0
-
-        if fromProcFile:
-            self.__getProcInformationFromProcFiles()
-        else:
-            self.__getProcesses()  # get a unique array of sorted processes by comm names
 
     def __iter__(self):
         return self
@@ -219,26 +103,41 @@ class ProcessArray:
             self.__iter_index += 1
             return process
 
-    def __getProcInformationFromProcFiles(self) -> None:
-        processes = self.__processArray
-        procDirs = glob.glob("/proc/[0-9]*")  # return /proc/[pid] directories
+    def __sortProcessArray(self, sortBy: str, reverse: bool = False) -> None:
+        processArray = self.__processArray
 
-        for procDir in procDirs:
-            process = Process.initFromProc(procDir)
-            if process:  # if process is not None
-                comm = process.getAttribute("comm")
-                processes.append(process)
+        def getAttribute(process: Process, attr: str):
+            if attr == "cpu":
+                return process.pcpu
+            elif attr == "mem":
+                return process.mem
+            elif attr == "swap":
+                return process.swap
+            elif attr == "comm":
+                return process.comm
+            elif attr == "pid":
+                return process.pid
+            else:
+                return process.comm  # fallback
 
-        self.__mergeProcessesWithSameComm()
+        self.__processArray = sorted(
+            processArray,
+            key=lambda process: getAttribute(process, sortBy),
+            reverse=not reverse,
+        )
 
-    def __getProcesses(self) -> None:
-        processes = self.__processArray
-        processNames = (
-            dict()
-        )  # used to keep track of unique processNames, thus used in order to filter unique processes only
+    # get a unique array of sorted processes by comm names
+    @classmethod
+    def getProcesses(cls, skipCurrentPid: bool):
+        processArray = ProcessArray()
+        processes = processArray.__processArray
+
+        # used to keep track of unique processNames, thus used in order to filter unique processes only
+        processNames = dict()
 
         # use a command (linux command) to get processes list (outputs a string)
-        command = f"ps -eo pid,pcpu,pmem,comm | tail -n+2 | tr -s ' '"  # the command outputs a sorted process by name (comm)
+        # field index:       0   1    2   3
+        command = f"ps -ewo pid,pcpu,rss,comm | tail -n+2 | tr -s ' '"  # the command outputs a sorted process by name (comm)
         result = (
             subprocess.run(command, shell=True, stdout=subprocess.PIPE)
             .stdout.decode("utf-8")
@@ -254,86 +153,31 @@ class ProcessArray:
             if len(line) == 0:
                 continue  # if there's nothing in the line, skip it
 
-            pid = int(line[0])
-            pcpu = float(line[1])
-            pmem = float(line[2])
-            comm = line[3].split("/")[0]  # some process have sub-processes that
+            (pid, pcpu, rss, comm) = line
+            pid = int(pid)
+            pcpu = float(pcpu)
+            rss = int(rss)
+            comm = comm.split("/")[0]  # some process have sub-processes that
             # named something like: "parentProcess/subProcess", I take only the parentProcess name
+
+            # skip current script process for being shown
+            if skipCurrentPid and pid == CURRENT_SCRIPT_PID:
+                continue
 
             if comm in processNames:
                 sameProcessIndex = processNames[comm]
                 process: Process = processes[sameProcessIndex]
-                process.addPID(
-                    [pid]
-                )  # add new pid to list of pids inside of process object
-                process.addPCPU(pcpu)
-                process.addPMEM(pmem)
+                process.pid.append(pid)
+                process.pcpu += pcpu
+                process.mem += rss
             else:
-                process = Process([pid], comm, 0, pmem, pcpu, 0)
+                process = Process([pid], comm, pcpu, rss, 0)
                 processes.append(process)  # add new process to the processes array
                 index += 1
                 processNames[
                     comm
                 ] = index  # add new process name to the processName dict to inform that it is the first occured process
-
-    def __sortProcessArray(self, sortBy: str = "", reverse: bool = False) -> None:
-        processArray = self.__processArray
-        size = len(processArray)
-
-        if sortBy == "":
-            return
-
-        if sortBy == "cpu":
-            attrib = "pcpu"
-        # elif sortBy == "mem": attrib = "pmem"         # redundant
-        else:
-            attrib = sortBy
-
-        self.__processArray = sorted(processArray, key=lambda process: process.getAttribute(attrib), reverse=not reverse)
-
-    def __mergeProcesses(self, proc1: Process, proc2: Process):
-        # TODO: implement the merging
-        comm: str = proc1.getAttribute("comm")
-        pid: list[int] = proc1.getAttribute("pid") + proc2.getAttribute("pid")
-        pcpu: float = proc1.getAttribute("pcpu") + proc2.getAttribute("pcpu")
-        pmem: float = proc1.getAttribute("pmem") + proc2.getAttribute("pmem")
-        mem: int = proc1.getAttribute("mem") + proc2.getAttribute("mem")
-        swap: int = proc1.getAttribute("swap") + proc2.getAttribute("swap")
-
-        # print("comm: ", proc1.getAttribute("comm"))
-        # print("pid : ", proc1.getAttribute("pid"),  proc2.getAttribute("pid"),  pid)
-        # print("pcpu: ", proc1.getAttribute("pcpu"), proc2.getAttribute("pcpu"), pcpu)
-        # print("pmem: ", proc1.getAttribute("pmem"), proc2.getAttribute("pmem"), pmem)
-        # print("mem : ", proc1.getAttribute("mem"),  proc2.getAttribute("mem"),  mem)
-        # print("swap: ", proc1.getAttribute("swap"), proc2.getAttribute("swap"), swap)
-        # print()
-
-        mergedProcess = Process(pid, comm, mem, pmem, pcpu, swap)
-
-        return mergedProcess
-
-    # NOTE: something is wrong with this function
-    def __mergeProcessesWithSameComm(self) -> None:
-        processes = self.__processArray
-
-        newProcessArray: list[Process] = list()
-        newArrayIndex = -1
-        processCommNames = dict()  # format: {comm: index}
-        for process in processes:
-            comm = process.getAttribute("comm")
-            # print(comm, process)
-            if comm in processCommNames:
-                previousProcessIndex = processCommNames[comm]
-                previousProcess = newProcessArray[previousProcessIndex]
-                newProcessArray[previousProcessIndex] = self.__mergeProcesses(
-                    previousProcess, process
-                )  # merge previousProcess (already in processCommNames) with process and replace previousProcess by the new merged one
-            else:
-                newArrayIndex += 1
-                newProcessArray.append(process)
-                processCommNames[comm] = newArrayIndex
-
-        self.__processArray = newProcessArray
+        return processArray
 
     def findProcessByComm(self, comm: str, indexOnly: bool = False):
         found = False
@@ -343,7 +187,7 @@ class ProcessArray:
         process: Process | None = None
         for process in processes:
             count += 1
-            if process.getAttribute("comm") == comm:
+            if process.comm == comm:
                 found = True
                 break
 
@@ -353,20 +197,12 @@ class ProcessArray:
 
         return count if indexOnly else (process, count)
 
-    def getProcessArray(self):
-        return self.__processArray
-
-    def getTotalMemoryUsage(self):
-        processes = self.__processArray
-
-        totalMem: int = 0
-        for process in processes:
-            totalMem += process.getAttribute("mem")
-
-        return Process.formatBytes(totalMem)
-
     def print(
-        self, sortBy: str = "cpu", amount: int = -1, reverse: bool = False
+        self,
+        sortBy: str = "cpu",
+        amount: int = -1,
+        reverse: bool = False,
+        withHeader=False,
     ) -> None:
         self.__sortProcessArray(sortBy, reverse)  # sort processArray
 
@@ -374,8 +210,29 @@ class ProcessArray:
         if amount < 0 or amount > processArraySize:
             amount = processArraySize
 
+        firstColumnLen = (
+            max(len(str(amount)), len("no. ")) if withHeader else len(str(amount))
+        )
+
+        maxCommLen = 25
+        shownPidNum = 4
+        fmt = f"{{:>{firstColumnLen}.{firstColumnLen}}} | {{:>5.5}} | {{:>4.4}} | {{:>4.4}} | {{:>4.4}} | {{:<{maxCommLen}.{maxCommLen}}} | {{}}"
+
+        if withHeader:
+            print(fmt.format("no.", "pcpu", "pmem", "mem", "swap", "comm", "pids"))
+            sep = "-" * maxCommLen  # comm is highest width
+            print(fmt.format(sep, sep, sep, sep, sep, sep, sep))
         for count, process in enumerate(self.__processArray[:amount]):
-            print(f"{count+1:>{len(str(amount))}}", process)
+            p = process
+            countStr = str(count + 1)
+            memStr = formatBytes(p.mem)
+            swapStr = formatBytes(p.swap)
+
+            shownPids = p.pid[: min(len(p.pid), shownPidNum)]
+            shownPids = f"({len(p.pid)}) [{', '.join(map(str, shownPids)) + ', ...' * (len(p.pid)> shownPidNum)}]"
+            pmem = 100 * p.mem / getTotalMemory()
+            (pcpu, pmem, comm) = (str(round(p.pcpu, 1)), str(round(pmem, 1)), p.comm)
+            print(fmt.format(countStr, pcpu, pmem, memStr, swapStr, comm, shownPids))
 
 
 def main() -> None:
@@ -388,6 +245,24 @@ def main() -> None:
         default=None,
     )
     parser.add_argument(
+        "-d",
+        "--no-header",
+        help="print without header",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-r",
+        "--reverse",
+        help="reverse displayed list",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-s",
+        "--skip-current",
+        help="skip and ignore the process of this script from being displayed",
+        action="store_true",
+    )
+    parser.add_argument(
         "-n",
         "--num",
         help="number of processes to display",
@@ -396,10 +271,6 @@ def main() -> None:
         type=int,
         default=-1,
     )
-    parser.add_argument(
-        "-r", "--reverse", help="reverse displayed list", action="store_true"
-    )
-    parser.add_argument("--new", help="use new algorithm", action="store_true")
 
     args = parser.parse_args()
 
@@ -407,21 +278,26 @@ def main() -> None:
     COUNT = args.num
     REVERSE = args.reverse
     SHOW_TOTAL = args.mode == "total"
-    USE_NEW = args.new
+    HEADER = not args.no_header
+    SKIP = args.skip_current
 
-    processes = ProcessArray(fromProcFile=USE_NEW)
+    processes = ProcessArray.getProcesses(SKIP)
 
     if SHOW_TOTAL:
         pcpu = 0.0
-        pmem = 0.0
+        mem = 0
         for p in processes:
-            pcpu += p.getAttribute("pcpu")
-            pmem += p.getAttribute("pmem")
+            pcpu += p.pcpu
+            mem += p.mem
 
-        print(f"CPU: {round(pcpu,1)}% | MEM: {round(pmem,1)}%")
+        totalMem = getTotalMemory()
+        pmem = mem / getTotalMemory() * 100
+        print(
+            f"CPU: {round(pcpu,1)}% | MEM: {round(pmem,1)}% ({formatBytes(mem)}/{formatBytes(totalMem)})"
+        )
 
     else:
-        processes.print(CHOICE, COUNT, REVERSE)
+        processes.print(CHOICE, COUNT, REVERSE, HEADER)
 
 
 if __name__ == "__main__":
