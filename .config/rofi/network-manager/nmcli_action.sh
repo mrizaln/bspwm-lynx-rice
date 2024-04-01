@@ -9,11 +9,11 @@ rofi_command="rofi -theme $dir/$theme"
 
 get_status()
 {
-    device_status=($(timeout 5s nmcli device status | grep "$device"))
+    local device_status=($(timeout 5s nmcli device status | grep "$device"))
 
     case "${device_status[2]}" in
         'connected')
-            echo "$device connected to ${device_status[@]:3}"
+            echo "$device connected to ${device_status[3]}"
             ;;
         'disconnected')
             echo "Not Connected"
@@ -31,20 +31,20 @@ get_status()
 
 get_list()
 {
-    head="$(nmcli device wifi list ifname ${device} | head -1)"
-    offset_of_MODE=$(echo "$head" | head -1 | awk -F 'MODE' '{print $1}')
-    offset_m="${#offset_of_MODE}"
+    local head="$(nmcli device wifi list ifname ${device} | head -1)"
+    local offset_of_MODE=$(echo "$head" | head -1 | awk -F 'MODE' '{print $1}')
+    local offset_m="${#offset_of_MODE}"
 
-    offset_of_SIGNAL=$(echo "$head" | head -1 | awk -F 'SIGNAL' '{print $1}')
-    offset_s="${#offset_of_SIGNAL}"
+    local offset_of_SIGNAL=$(echo "$head" | head -1 | awk -F 'SIGNAL' '{print $1}')
+    local offset_s="${#offset_of_SIGNAL}"
 
     while read line; do
         if [[ "${line:0:1}" == "*" ]]; then
             line="${line:8:-1}"
         fi
 
-        ssid="$(echo "$line" | cut -b20-$(( offset_m - 9 )))"
-        signal="$(echo "$line" | cut -b$(( offset_s  ))- | tr -s ' ' | cut -d ' ' -f2)"
+        local ssid="$(echo "$line" | cut -b20-$(( offset_m - 9 )))"
+        local signal="$(echo "$line" | cut -b$(( offset_s  ))- | tr -s ' ' | cut -d ' ' -f2)"
 
         echo "$ssid| $signal |"
     done < <(nmcli device wifi list ifname "$device" | tail -n+2)
@@ -52,6 +52,7 @@ get_list()
 
 prompt()
 {
+    local add=""
     if [[ "$1" == "password" ]]; then
         add="-password"
     fi
@@ -61,8 +62,8 @@ prompt()
 
 connect_hidden()
 {
-    ssid="$1"
-    password="$2"
+    local ssid="$1"
+    local password="$2"
 
     nmcli connection add type wifi con-name "$ssid" ifname "$device" ssid "$ssid" #&&\
     nmcli connection modify "$ssid" wifi-sec.key-mgmt wpa-psk #&&\
@@ -73,20 +74,19 @@ connect_hidden()
 connect()
 {
     shopt -s extglob
-    ssid="$1"
-    ssid="${ssid%%*([[:blank:]])}"
+    local ssid="$1"
+    local ssid="${ssid%%*([[:blank:]])}"
+    local hidden="no"
 
     if [[ "$ssid" == "" ]]; then
         exit 0;
     elif [[ "$ssid" == "[hidden]" ]]; then
         ssid="$(prompt "ssid")"
         hidden="yes"
-    else
-        hidden="no"
     fi
 
     # check whether the computer has connected to the network before (the network details is saved in the computer)
-    promt_password=true
+    local promt_password=true
     while read c; do
         if [[ "$c" =~ ^${ssid}.* ]]; then
             promt_password=false
@@ -94,6 +94,7 @@ connect()
         fi
     done < <(ls /etc/NetworkManager/system-connections/ | cut -d. -f1)
 
+    local result=""
     if [[ "$promt_password" == true ]]; then
         password="$(prompt "password")"
         if [[ "$password" == "" ]]; then
@@ -109,18 +110,23 @@ connect()
     notify-send "$result"
 }
 
-status=$(get_status)
-[ $? -ne 0 ] && exit 1
+main() 
+{
+    local status=$(get_status)
+    [ $? -ne 0 ] && exit 1
 
-list=$(echo -e "$(get_list)\n[disconnect]\n[hidden]")
+    local list=$(echo -e "$(get_list)\n[disconnect]\n[hidden]")
 
-ssid="$(echo "$list" | $rofi_command -dmenu -markup-rows -i -p "$status")"
-if [[ "$ssid" == "[disconnect]" ]]; then
-    msg=$(nmcli device disconnect "$device")
-    notify-send "$msg"
-    exit 0
-fi
+    local ssid="$(echo "$list" | $rofi_command -dmenu -markup-rows -i -p "$status")"
+    if [[ "$ssid" == "[disconnect]" ]]; then
+        local msg=$(nmcli device disconnect "$device")
+        notify-send "$msg"
+        exit 0
+    fi
 
-ssid="$(echo "$ssid" | cut -d '|' -f1)"
+    local ssid="$(echo "$ssid" | cut -d '|' -f1)"
 
-connect "$ssid"
+    connect "$ssid"
+}
+
+main
